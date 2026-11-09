@@ -110,11 +110,7 @@ module StoredProcedures =
     type Builder(context: IMigrationContext, name: string) as this =
         inherit ExpressionBuilderBase<ExecuteSqlStatementExpression>(ExecuteSqlStatementExpression())
 
-        let mutable schema: string option = None
-        let mutable orReplace = false
-        let mutable parameters: Parameter list = []
-        let mutable language = "plpgsql"
-        let mutable body = ""
+        let state = ref (create name)
 
         do
             context.Expressions.Add(this.Expression)
@@ -122,24 +118,23 @@ module StoredProcedures =
 
         member private this.UpdateSql() =
             let def =
-                {
-                    Name = name
-                    Schema = schema
-                    OrReplace = orReplace
-                    Parameters = List.rev parameters
-                    Language = language
-                    Body = body
+                { state.Value with
+                    Parameters = List.rev state.Value.Parameters
                 }
 
             this.Expression.SqlStatement <- toSql def
 
         member this.InSchema(schemaName: string) =
-            schema <- Some schemaName
+            state.Value <-
+                { state.Value with
+                    Schema = Some schemaName
+                }
+
             this.UpdateSql()
             this
 
         member this.OrReplace() =
-            orReplace <- true
+            state.Value <- { state.Value with OrReplace = true }
             this.UpdateSql()
             this
 
@@ -154,7 +149,11 @@ module StoredProcedures =
                     DefaultValue = None
                 }
 
-            parameters <- p :: parameters
+            state.Value <-
+                { state.Value with
+                    Parameters = p :: state.Value.Parameters
+                }
+
             this.UpdateSql()
             this
 
@@ -165,13 +164,16 @@ module StoredProcedures =
             this.WithParameter(paramName, dataType, Out)
 
         member this.WithDefaultValue(defaultValueExpr: string) =
-            match parameters with
+            match state.Value.Parameters with
             | p :: tail ->
-                parameters <-
-                    { p with
-                        DefaultValue = Some defaultValueExpr
+                state.Value <-
+                    { state.Value with
+                        Parameters =
+                            { p with
+                                DefaultValue = Some defaultValueExpr
+                            }
+                            :: tail
                     }
-                    :: tail
 
                 this.UpdateSql()
             | [] -> ()
@@ -179,12 +181,12 @@ module StoredProcedures =
             this
 
         member this.Language(lang: string) =
-            language <- lang
+            state.Value <- { state.Value with Language = lang }
             this.UpdateSql()
             this
 
         member this.AsBody(sqlBody: string) =
-            body <- sqlBody
+            state.Value <- { state.Value with Body = sqlBody }
             this.UpdateSql()
             this
 
@@ -200,47 +202,51 @@ module StoredProcedures =
     type DeleteProcedureExpressionBuilder(expression: ExecuteSqlStatementExpression, procName: string) as this =
         inherit ExpressionBuilderBase<ExecuteSqlStatementExpression>(expression)
 
-        let mutable ifExists = true
-        let mutable schema: string option = None
-        let mutable parameterTypes: string list = []
-        let mutable cascade = false
+        let state =
+            ref
+                {
+                    Name = procName
+                    Schema = None
+                    IfExists = true
+                    ParameterTypes = []
+                    Cascade = false
+                }
 
         do this.UpdateSql()
 
         member private this.UpdateSql() =
-            let options =
-                {
-                    Name = procName
-                    Schema = schema
-                    IfExists = ifExists
-                    ParameterTypes = parameterTypes
-                    Cascade = cascade
-                }
-
-            this.Expression.SqlStatement <- dropSql options
+            this.Expression.SqlStatement <- dropSql state.Value
 
         member this.IfExists() =
-            ifExists <- true
+            state.Value <- { state.Value with IfExists = true }
             this.UpdateSql()
             this
 
         member this.InSchema(schemaName: string) =
-            schema <- Some schemaName
+            state.Value <-
+                { state.Value with
+                    Schema = Some schemaName
+                }
+
             this.UpdateSql()
             this
 
         member this.WithParameterTypes(types: string list) =
-            parameterTypes <- types
+            state.Value <-
+                { state.Value with
+                    ParameterTypes = types
+                }
+
             this.UpdateSql()
             this
 
         member this.Cascade() =
-            cascade <- true
+            state.Value <- { state.Value with Cascade = true }
             this.UpdateSql()
             this
 
         member this.Restrict() =
-            cascade <- false
+            state.Value <- { state.Value with Cascade = false }
             this.UpdateSql()
             this
 

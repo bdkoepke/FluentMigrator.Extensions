@@ -167,6 +167,186 @@ module Builder =
         Assert.Equal(1, Helpers.statements ctx |> List.length)
         Assert.Contains("CREATE VIEW user_names (", Helpers.lastStatement ctx)
 
+    [<Fact>]
+    let ``create root builds a raw SQL view`` () =
+        let ctx = Helpers.context ()
+        CreateRoot(ctx, "active_users").As("SELECT 1 AS id")
+        Assert.Equal("CREATE VIEW active_users AS SELECT 1 AS id;", Helpers.lastStatement ctx)
+
+    [<Fact>]
+    let ``create root builds a replaceable raw SQL view`` () =
+        let ctx = Helpers.context ()
+        CreateRoot(ctx, "active_users").OrReplace().As("SELECT 1 AS id")
+
+        Assert.Equal("CREATE OR REPLACE VIEW active_users AS SELECT 1 AS id;", Helpers.lastStatement ctx)
+
+    [<Fact>]
+    let ``create extension supports raw SQL views`` () =
+        let ctx = Helpers.context ()
+        CreateExpressionRoot(ctx).View("active_users").As("SELECT 1 AS id")
+
+        Assert.Equal(1, Helpers.statements ctx |> List.length)
+        Assert.Equal("CREATE VIEW active_users AS SELECT 1 AS id;", Helpers.lastStatement ctx)
+
+    [<Fact>]
+    let ``relational builder emits joins, columns, where and group by`` () =
+        let ctx = Helpers.context ()
+
+        CreateRoot(ctx, "active_users")
+            .From("users u")
+            .Join("accounts a", "a.user_id = u.id")
+            .LeftJoin("profiles p", "p.user_id = u.id")
+            .WithColumn("id")
+            .As("u.id")
+            .WithColumn("email")
+            .As("u.email")
+            .Where("u.active = true")
+            .GroupBy("u.id, u.email")
+        |> ignore
+
+        let expected =
+            String.concat
+                "\n"
+                [
+                    "CREATE VIEW active_users ("
+                    "    id,"
+                    "    email"
+                    ") AS"
+                    "SELECT"
+                    "    u.id,"
+                    "    u.email"
+                    "FROM users u"
+                    "JOIN accounts a ON a.user_id = u.id"
+                    "LEFT JOIN profiles p ON p.user_id = u.id"
+                    "WHERE u.active = true"
+                    "GROUP BY u.id, u.email;"
+                ]
+
+        Assert.Equal(expected, Helpers.lastStatement ctx)
+
+    [<Fact>]
+    let ``relational builder emits CTEs`` () =
+        let ctx = Helpers.context ()
+
+        CreateRoot(ctx, "recent_users")
+            .With("recent", "SELECT * FROM users WHERE active = true")
+            .From("recent r")
+            .WithColumn("id")
+            .As("r.id")
+        |> ignore
+
+        let expected =
+            String.concat
+                "\n"
+                [
+                    "CREATE VIEW recent_users ("
+                    "    id"
+                    ") AS"
+                    "WITH recent AS ("
+                    "    SELECT * FROM users WHERE active = true"
+                    ")"
+                    "SELECT"
+                    "    r.id"
+                    "FROM recent r;"
+                ]
+
+        Assert.Equal(expected, Helpers.lastStatement ctx)
+
+    [<Fact>]
+    let ``relational builder supports replace`` () =
+        let ctx = Helpers.context ()
+
+        CreateRoot(ctx, "active_users").OrReplace().From("users u").WithColumn("id").As("u.id")
+        |> ignore
+
+        Assert.StartsWith("CREATE OR REPLACE VIEW active_users", Helpers.lastStatement ctx)
+
+    [<Fact>]
+    let ``relational builder supports expression DSL and structured CTE`` () =
+        let ctx = Helpers.context ()
+
+        CreateRoot(ctx, "active_users")
+            .With(
+                "recent",
+                fun cte ->
+                    cte
+                        .From("users", "u")
+                        .WithColumn("id")
+                        .As(Expr.colOf "u" "id")
+                        .WithColumn("email")
+                        .As(Expr.colOf "u" "email")
+                        .Where(Expr.eq (Expr.colOf "u" "active") (Expr.bool true))
+            )
+            .From("recent", "r")
+            .WithColumn("id")
+            .As(Expr.colOf "r" "id")
+            .WithColumn("email")
+            .As(Expr.colOf "r" "email")
+        |> ignore
+
+        let expected =
+            String.concat
+                "\n"
+                [
+                    "CREATE VIEW active_users ("
+                    "    id,"
+                    "    email"
+                    ") AS"
+                    "WITH recent AS ("
+                    "    SELECT"
+                    "        u.id AS id,"
+                    "        u.email AS email"
+                    "    FROM users u"
+                    "    WHERE (u.active = TRUE)"
+                    ")"
+                    "SELECT"
+                    "    r.id,"
+                    "    r.email"
+                    "FROM recent r;"
+                ]
+
+        Assert.Equal(expected, Helpers.lastStatement ctx)
+
+    [<Fact>]
+    let ``relational builder supports union`` () =
+        let ctx = Helpers.context ()
+
+        CreateRoot(ctx, "keys")
+            .From("previous_positions")
+            .WithColumn("holding_snapshot_id")
+            .As(Expr.col "holding_snapshot_id")
+            .WithColumn("security_id")
+            .As(Expr.col "security_id")
+            .Union(fun other ->
+                other
+                    .From("current_positions")
+                    .WithColumn("holding_snapshot_id")
+                    .As(Expr.col "holding_snapshot_id")
+                    .WithColumn("security_id")
+                    .As(Expr.col "security_id"))
+        |> ignore
+
+        let expected =
+            String.concat
+                "\n"
+                [
+                    "CREATE VIEW keys ("
+                    "    holding_snapshot_id,"
+                    "    security_id"
+                    ") AS"
+                    "SELECT"
+                    "    holding_snapshot_id,"
+                    "    security_id"
+                    "FROM previous_positions"
+                    "UNION"
+                    "SELECT"
+                    "    holding_snapshot_id,"
+                    "    security_id"
+                    "FROM current_positions;"
+                ]
+
+        Assert.Equal(expected, Helpers.lastStatement ctx)
+
 module Delete =
     [<Fact>]
     let ``delete builder drops a view if it exists by default`` () =
@@ -198,3 +378,46 @@ module Delete =
 
         Assert.Equal(1, Helpers.statements ctx |> List.length)
         Assert.Equal("DROP VIEW IF EXISTS reporting.active_users;", Helpers.lastStatement ctx)
+
+module ExprParserTests =
+    [<Fact>]
+    let ``parses operator precedence`` () =
+        let expr = ExprParser.parse "a + b * 2"
+        Assert.Equal("(a + (b * 2))", Expr.toSql expr)
+
+    [<Fact>]
+    let ``parses comparisons and boolean operators`` () =
+        let expr = ExprParser.parse "u.age >= 18 AND u.active = TRUE"
+        Assert.Equal("((u.age >= 18) AND (u.active = TRUE))", Expr.toSql expr)
+
+    [<Fact>]
+    let ``parses function calls and postfix predicates`` () =
+        let expr = ExprParser.parse "coalesce(u.nickname, u.email) IS NOT NULL"
+        Assert.Equal("(coalesce(u.nickname, u.email) IS NOT NULL)", Expr.toSql expr)
+
+    [<Fact>]
+    let ``parses prefix operators`` () =
+        let expr = ExprParser.parse "NOT u.active AND -u.balance > 0"
+
+        Assert.Equal("((NOT u.active) AND ((-u.balance) > 0))", Expr.toSql expr)
+
+    [<Fact>]
+    let ``parses quoted identifiers and escaped strings`` () =
+        let expr = ExprParser.parse "\"user\".\"display name\" = 'O''Brien'"
+        Assert.Equal("(\"user\".\"display name\" = 'O''Brien')", Expr.toSql expr)
+
+    [<Fact>]
+    let ``parses searched case expressions`` () =
+        let expr = ExprParser.parse "CASE WHEN a > 0 THEN 'positive' ELSE 'other' END"
+        Assert.Equal("CASE\n    WHEN (a > 0) THEN 'positive'\n    ELSE 'other'\nEND", Expr.toSql expr)
+
+    [<Fact>]
+    let ``parses window functions`` () =
+        let expr =
+            ExprParser.parse "row_number() OVER (PARTITION BY u.account_id ORDER BY u.created_at DESC)"
+
+        Assert.Equal("row_number() OVER (PARTITION BY u.account_id ORDER BY u.created_at DESC)", Expr.toSql expr)
+
+    [<Fact>]
+    let ``returns an error for invalid input`` () =
+        Assert.True(Result.isError (ExprParser.tryParse "a +"))

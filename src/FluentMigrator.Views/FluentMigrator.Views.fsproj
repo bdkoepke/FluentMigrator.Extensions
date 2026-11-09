@@ -5,15 +5,18 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <IsPackable>true</IsPackable>
     <PackageId>FluentMigrator.Views</PackageId>
+    <Version>1.4.0</Version>
     <Description>FluentMigrator extensions for creating and dropping PostgreSQL JSON views.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="View.fs" />
+    <Compile Include="ExprParser.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="FluentMigrator" Version="8.0.1" />
+    <PackageReference Include="FParsec" Version="1.1.1" />
   </ItemGroup>
 
 </Project>
